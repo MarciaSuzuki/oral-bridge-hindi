@@ -358,9 +358,19 @@ export default function Pipeline() {
   const [error, setError] = useState(null)
   const [feedback, setFeedback] = useState({})
   const [viewMode, setViewMode] = useState({}) // 'formatted' or 'edit'
+  
+  // ElevenLabs state
   const [elevenLabsKey, setElevenLabsKey] = useState('')
-  const [generatingAudio, setGeneratingAudio] = useState(false)
-  const [audioUrl, setAudioUrl] = useState(null)
+  const [generatingFull, setGeneratingFull] = useState(false)
+  const [generatingScripture, setGeneratingScripture] = useState(false)
+  const [generatingFraming, setGeneratingFraming] = useState(false)
+  const [fullAudioUrl, setFullAudioUrl] = useState(null)
+  const [scriptureAudioUrl, setScriptureAudioUrl] = useState(null)
+  const [framingAudioUrl, setFramingAudioUrl] = useState(null)
+  const [ttsFullText, setTtsFullText] = useState('')
+  const [ttsScriptureText, setTtsScriptureText] = useState('')
+  const [ttsFramingText, setTtsFramingText] = useState('')
+  const [ttsTab, setTtsTab] = useState('full') // 'full', 'scripture', 'framing'
 
   const getStageStatus = (agentId) => {
     if (runningAgent === agentId) return 'active'
@@ -452,25 +462,88 @@ export default function Pipeline() {
     return editedOutputs[`agent${agentId}`] || outputs[`agent${agentId}`]
   }
 
-  const generateAudio = async () => {
+  // Parse Agent 5 output to extract scripts
+  const parseAgent5Output = (output) => {
+    if (!output) return { fullScript: '', scriptureContent: '', framingContent: '' }
+    
+    let fullScript = ''
+    let scriptureContent = ''
+    let framingContent = ''
+    
+    // Extract Full Script (Output 1)
+    const output1Match = output.match(/Output 1:[\s\S]*?```([\s\S]*?)```/i)
+    if (output1Match) {
+      fullScript = output1Match[1].trim()
+    }
+    
+    // Extract Scripture Content (File A from Output 2)
+    const fileAMatch = output.match(/File A:[\s\S]*?```([\s\S]*?)```/i)
+    if (fileAMatch) {
+      scriptureContent = fileAMatch[1].trim()
+    }
+    
+    // Extract Framing Content (File B from Output 2)
+    const fileBMatch = output.match(/File B:[\s\S]*?```([\s\S]*?)```/i)
+    if (fileBMatch) {
+      framingContent = fileBMatch[1].trim()
+    }
+    
+    // Fallback: if no code blocks, try to find content another way
+    if (!fullScript && !scriptureContent) {
+      // Try without code blocks
+      const simpleOutput1 = output.match(/Output 1:[^\n]*\n([\s\S]*?)(?=Output 2:|$)/i)
+      if (simpleOutput1) {
+        fullScript = simpleOutput1[1].replace(/```/g, '').trim()
+      }
+    }
+    
+    return { fullScript, scriptureContent, framingContent }
+  }
+
+  const generateAudio = async (textType = 'full') => {
     if (!elevenLabsKey) {
       setError('Please enter your ElevenLabs API key')
       return
     }
     
-    setGeneratingAudio(true)
+    const agent5Output = getEffectiveOutput(5)
+    const parsed = parseAgent5Output(agent5Output)
+    
+    let textToSpeak = ''
+    let settings = {}
+    let filename = ''
+    
+    switch (textType) {
+      case 'scripture':
+        textToSpeak = ttsScriptureText || parsed.scriptureContent
+        settings = { stability: 0.55, similarity_boost: 0.75, style: 0.10 }
+        filename = 'scripture-content.mp3'
+        setGeneratingScripture(true)
+        break
+      case 'framing':
+        textToSpeak = ttsFramingText || parsed.framingContent
+        settings = { stability: 0.75, similarity_boost: 0.70, style: 0.00 }
+        filename = 'performance-framing.mp3'
+        setGeneratingFraming(true)
+        break
+      default:
+        textToSpeak = ttsFullText || parsed.fullScript
+        settings = { stability: 0.60, similarity_boost: 0.75, style: 0.05 }
+        filename = 'full-script.mp3'
+        setGeneratingFull(true)
+    }
+    
+    if (!textToSpeak.trim()) {
+      setError(`No ${textType} text found. Please check Agent 5 output or enter text manually.`)
+      setGeneratingFull(false)
+      setGeneratingScripture(false)
+      setGeneratingFraming(false)
+      return
+    }
+    
     setError(null)
     
     try {
-      // Extract the TTS-ready script from Agent 5 output
-      const agent5Output = getEffectiveOutput(5)
-      // Simple extraction - get text between "Output 1:" and "Output 2:" or end
-      let ttsText = agent5Output
-      const output1Match = agent5Output.match(/Output 1:[\s\S]*?(?=Output 2:|$)/i)
-      if (output1Match) {
-        ttsText = output1Match[0].replace(/Output 1:.*?\n/i, '').trim()
-      }
-      
       const response = await fetch('https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM', {
         method: 'POST',
         headers: {
@@ -478,28 +551,37 @@ export default function Pipeline() {
           'xi-api-key': elevenLabsKey
         },
         body: JSON.stringify({
-          text: ttsText.slice(0, 5000), // Limit to 5000 chars
+          text: textToSpeak.slice(0, 5000),
           model_id: 'eleven_multilingual_v2',
-          voice_settings: {
-            stability: 0.6,
-            similarity_boost: 0.75
-          }
+          voice_settings: settings
         })
       })
       
       if (!response.ok) {
         const errorData = await response.json()
-        throw new Error(errorData.detail?.message || 'ElevenLabs API error')
+        throw new Error(errorData.detail?.message || errorData.detail || 'ElevenLabs API error')
       }
       
       const audioBlob = await response.blob()
       const url = URL.createObjectURL(audioBlob)
-      setAudioUrl(url)
+      
+      switch (textType) {
+        case 'scripture':
+          setScriptureAudioUrl(url)
+          break
+        case 'framing':
+          setFramingAudioUrl(url)
+          break
+        default:
+          setFullAudioUrl(url)
+      }
       
     } catch (err) {
       setError(`Audio generation error: ${err.message}`)
     } finally {
-      setGeneratingAudio(false)
+      setGeneratingFull(false)
+      setGeneratingScripture(false)
+      setGeneratingFraming(false)
     }
   }
 
@@ -521,7 +603,12 @@ export default function Pipeline() {
     setExpandedStage(null)
     setFeedback({})
     setViewMode({})
-    setAudioUrl(null)
+    setFullAudioUrl(null)
+    setScriptureAudioUrl(null)
+    setFramingAudioUrl(null)
+    setTtsFullText('')
+    setTtsScriptureText('')
+    setTtsFramingText('')
   }
 
   return (
@@ -686,51 +773,272 @@ export default function Pipeline() {
                       
                       {/* ElevenLabs Integration for Agent 5 */}
                       {agent.id === 5 && (
-                        <div style={styles.audioSection}>
-                          <label style={{ fontWeight: '600', fontSize: '0.9rem', display: 'block', marginBottom: '0.5rem' }}>
-                            🔊 Generate Audio with ElevenLabs
-                          </label>
-                          <input
-                            type="password"
-                            placeholder="Enter your ElevenLabs API key"
-                            value={elevenLabsKey}
-                            onChange={(e) => setElevenLabsKey(e.target.value)}
-                            style={{
-                              width: '100%',
-                              padding: '0.5rem',
-                              border: '1px solid #d1d5db',
-                              borderRadius: '6px',
-                              marginBottom: '0.75rem'
-                            }}
-                          />
-                          <button
-                            style={{
-                              ...styles.button,
-                              ...styles.successButton,
-                              ...(generatingAudio ? styles.disabledButton : {})
-                            }}
-                            onClick={generateAudio}
-                            disabled={generatingAudio || !elevenLabsKey}
-                          >
-                            {generatingAudio ? 'Generating Audio...' : '🎧 Generate Audio Preview'}
-                          </button>
+                        <div style={{ marginTop: '1.5rem', padding: '1.5rem', background: 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)', borderRadius: '8px', border: '1px solid #86efac' }}>
+                          <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1.1rem', color: '#166534' }}>
+                            🔊 ElevenLabs Audio Generation
+                          </h3>
+                          <p style={{ color: '#166534', fontSize: '0.9rem', marginBottom: '1rem' }}>
+                            Generate audio for Scripture content and Performance Framing separately, with optimized settings for each.
+                          </p>
                           
-                          {audioUrl && (
-                            <div style={{ marginTop: '1rem' }}>
-                              <p style={{ fontWeight: '600', marginBottom: '0.5rem' }}>Audio Preview:</p>
-                              <audio controls src={audioUrl} style={{ width: '100%' }} />
-                              <a
-                                href={audioUrl}
-                                download="oral-hindi-preview.mp3"
+                          {/* API Key Input */}
+                          <div style={{ marginBottom: '1rem' }}>
+                            <label style={{ display: 'block', fontWeight: '600', fontSize: '0.85rem', marginBottom: '0.25rem' }}>
+                              ElevenLabs API Key
+                            </label>
+                            <input
+                              type="password"
+                              placeholder="Enter your ElevenLabs API key (from elevenlabs.io)"
+                              value={elevenLabsKey}
+                              onChange={(e) => setElevenLabsKey(e.target.value)}
+                              style={{
+                                width: '100%',
+                                padding: '0.6rem',
+                                border: '1px solid #d1d5db',
+                                borderRadius: '6px',
+                                fontSize: '0.9rem'
+                              }}
+                            />
+                          </div>
+                          
+                          {/* TTS Tabs */}
+                          <div style={{ display: 'flex', borderBottom: '2px solid #d1fae5', marginBottom: '1rem' }}>
+                            {[
+                              { id: 'full', label: '📜 Full Script', desc: 'Complete audio' },
+                              { id: 'scripture', label: '📖 Scripture Only', desc: 'Biblical text' },
+                              { id: 'framing', label: '🎭 Framing Only', desc: 'Oral cues' }
+                            ].map(tab => (
+                              <button
+                                key={tab.id}
+                                onClick={() => {
+                                  setTtsTab(tab.id)
+                                  // Auto-populate text from Agent 5 output
+                                  const parsed = parseAgent5Output(getEffectiveOutput(5))
+                                  if (tab.id === 'full' && !ttsFullText) setTtsFullText(parsed.fullScript)
+                                  if (tab.id === 'scripture' && !ttsScriptureText) setTtsScriptureText(parsed.scriptureContent)
+                                  if (tab.id === 'framing' && !ttsFramingText) setTtsFramingText(parsed.framingContent)
+                                }}
                                 style={{
-                                  display: 'inline-block',
-                                  marginTop: '0.5rem',
-                                  color: '#2563eb',
-                                  textDecoration: 'underline'
+                                  padding: '0.75rem 1rem',
+                                  border: 'none',
+                                  background: ttsTab === tab.id ? '#dcfce7' : 'transparent',
+                                  borderBottom: ttsTab === tab.id ? '2px solid #16a34a' : '2px solid transparent',
+                                  marginBottom: '-2px',
+                                  cursor: 'pointer',
+                                  fontWeight: ttsTab === tab.id ? '600' : '400',
+                                  color: ttsTab === tab.id ? '#166534' : '#6b7280',
+                                  fontSize: '0.9rem'
                                 }}
                               >
-                                Download Audio
-                              </a>
+                                {tab.label}
+                              </button>
+                            ))}
+                          </div>
+                          
+                          {/* Full Script Tab */}
+                          {ttsTab === 'full' && (
+                            <div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                                <label style={{ fontWeight: '600', fontSize: '0.85rem' }}>Full Script Text</label>
+                                <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                  Settings: Stability 60% • Clarity 75% • Style 5%
+                                </span>
+                              </div>
+                              <textarea
+                                value={ttsFullText}
+                                onChange={(e) => setTtsFullText(e.target.value)}
+                                placeholder="The full script will appear here. You can edit it before generating audio."
+                                style={{
+                                  width: '100%',
+                                  minHeight: '150px',
+                                  padding: '0.75rem',
+                                  border: '1px solid #d1d5db',
+                                  borderRadius: '6px',
+                                  fontSize: '0.9rem',
+                                  fontFamily: 'inherit',
+                                  lineHeight: '1.6'
+                                }}
+                              />
+                              <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                                <button
+                                  onClick={() => generateAudio('full')}
+                                  disabled={generatingFull || !elevenLabsKey || !ttsFullText.trim()}
+                                  style={{
+                                    ...styles.button,
+                                    background: '#16a34a',
+                                    color: 'white',
+                                    ...(generatingFull || !elevenLabsKey || !ttsFullText.trim() ? styles.disabledButton : {})
+                                  }}
+                                >
+                                  {generatingFull ? '⏳ Generating...' : '🎧 Generate Full Audio'}
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    const parsed = parseAgent5Output(getEffectiveOutput(5))
+                                    setTtsFullText(parsed.fullScript)
+                                  }}
+                                  style={{ ...styles.button, ...styles.secondaryButton }}
+                                >
+                                  🔄 Reload from Agent 5
+                                </button>
+                              </div>
+                              {fullAudioUrl && (
+                                <div style={{ marginTop: '1rem', padding: '1rem', background: 'white', borderRadius: '6px' }}>
+                                  <p style={{ fontWeight: '600', marginBottom: '0.5rem', fontSize: '0.9rem' }}>✅ Full Script Audio:</p>
+                                  <audio controls src={fullAudioUrl} style={{ width: '100%' }} />
+                                  <a href={fullAudioUrl} download="full-script.mp3" style={{ display: 'inline-block', marginTop: '0.5rem', color: '#2563eb', fontSize: '0.85rem' }}>
+                                    ⬇️ Download MP3
+                                  </a>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          
+                          {/* Scripture Tab */}
+                          {ttsTab === 'scripture' && (
+                            <div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                                <label style={{ fontWeight: '600', fontSize: '0.85rem' }}>Scripture Content (Segment A)</label>
+                                <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                  Settings: Stability 55% • Clarity 75% • Style 10% (warmer)
+                                </span>
+                              </div>
+                              <p style={{ fontSize: '0.8rem', color: '#166534', marginBottom: '0.5rem', background: '#dcfce7', padding: '0.5rem', borderRadius: '4px' }}>
+                                💡 Scripture content uses warmer settings with slight style variation for theological gravitas.
+                              </p>
+                              <textarea
+                                value={ttsScriptureText}
+                                onChange={(e) => setTtsScriptureText(e.target.value)}
+                                placeholder="Scripture content (biblical text, dialogue) will appear here."
+                                style={{
+                                  width: '100%',
+                                  minHeight: '150px',
+                                  padding: '0.75rem',
+                                  border: '1px solid #d1d5db',
+                                  borderRadius: '6px',
+                                  fontSize: '0.9rem',
+                                  fontFamily: 'inherit',
+                                  lineHeight: '1.6'
+                                }}
+                              />
+                              <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                                <button
+                                  onClick={() => generateAudio('scripture')}
+                                  disabled={generatingScripture || !elevenLabsKey || !ttsScriptureText.trim()}
+                                  style={{
+                                    ...styles.button,
+                                    background: '#2563eb',
+                                    color: 'white',
+                                    ...(generatingScripture || !elevenLabsKey || !ttsScriptureText.trim() ? styles.disabledButton : {})
+                                  }}
+                                >
+                                  {generatingScripture ? '⏳ Generating...' : '📖 Generate Scripture Audio'}
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    const parsed = parseAgent5Output(getEffectiveOutput(5))
+                                    setTtsScriptureText(parsed.scriptureContent)
+                                  }}
+                                  style={{ ...styles.button, ...styles.secondaryButton }}
+                                >
+                                  🔄 Reload from Agent 5
+                                </button>
+                              </div>
+                              {scriptureAudioUrl && (
+                                <div style={{ marginTop: '1rem', padding: '1rem', background: 'white', borderRadius: '6px' }}>
+                                  <p style={{ fontWeight: '600', marginBottom: '0.5rem', fontSize: '0.9rem' }}>✅ Scripture Audio:</p>
+                                  <audio controls src={scriptureAudioUrl} style={{ width: '100%' }} />
+                                  <a href={scriptureAudioUrl} download="scripture-content.mp3" style={{ display: 'inline-block', marginTop: '0.5rem', color: '#2563eb', fontSize: '0.85rem' }}>
+                                    ⬇️ Download MP3
+                                  </a>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          
+                          {/* Framing Tab */}
+                          {ttsTab === 'framing' && (
+                            <div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                                <label style={{ fontWeight: '600', fontSize: '0.85rem' }}>Performance Framing (Segment B)</label>
+                                <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                  Settings: Stability 75% • Clarity 70% • Style 0% (neutral)
+                                </span>
+                              </div>
+                              <p style={{ fontSize: '0.8rem', color: '#166534', marginBottom: '0.5rem', background: '#dcfce7', padding: '0.5rem', borderRadius: '4px' }}>
+                                💡 Framing uses more consistent settings for a neutral, invitational tone that contrasts with Scripture.
+                              </p>
+                              <textarea
+                                value={ttsFramingText}
+                                onChange={(e) => setTtsFramingText(e.target.value)}
+                                placeholder="Performance framing (oral cues, transitions) will appear here."
+                                style={{
+                                  width: '100%',
+                                  minHeight: '100px',
+                                  padding: '0.75rem',
+                                  border: '1px solid #d1d5db',
+                                  borderRadius: '6px',
+                                  fontSize: '0.9rem',
+                                  fontFamily: 'inherit',
+                                  lineHeight: '1.6'
+                                }}
+                              />
+                              <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                                <button
+                                  onClick={() => generateAudio('framing')}
+                                  disabled={generatingFraming || !elevenLabsKey || !ttsFramingText.trim()}
+                                  style={{
+                                    ...styles.button,
+                                    background: '#7c3aed',
+                                    color: 'white',
+                                    ...(generatingFraming || !elevenLabsKey || !ttsFramingText.trim() ? styles.disabledButton : {})
+                                  }}
+                                >
+                                  {generatingFraming ? '⏳ Generating...' : '🎭 Generate Framing Audio'}
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    const parsed = parseAgent5Output(getEffectiveOutput(5))
+                                    setTtsFramingText(parsed.framingContent)
+                                  }}
+                                  style={{ ...styles.button, ...styles.secondaryButton }}
+                                >
+                                  🔄 Reload from Agent 5
+                                </button>
+                              </div>
+                              {framingAudioUrl && (
+                                <div style={{ marginTop: '1rem', padding: '1rem', background: 'white', borderRadius: '6px' }}>
+                                  <p style={{ fontWeight: '600', marginBottom: '0.5rem', fontSize: '0.9rem' }}>✅ Framing Audio:</p>
+                                  <audio controls src={framingAudioUrl} style={{ width: '100%' }} />
+                                  <a href={framingAudioUrl} download="performance-framing.mp3" style={{ display: 'inline-block', marginTop: '0.5rem', color: '#2563eb', fontSize: '0.85rem' }}>
+                                    ⬇️ Download MP3
+                                  </a>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          
+                          {/* Summary of all generated audio */}
+                          {(fullAudioUrl || scriptureAudioUrl || framingAudioUrl) && (
+                            <div style={{ marginTop: '1.5rem', padding: '1rem', background: '#fefce8', borderRadius: '6px', border: '1px solid #fcd34d' }}>
+                              <h4 style={{ margin: '0 0 0.75rem 0', fontSize: '0.95rem', color: '#854d0e' }}>📁 Generated Audio Files</h4>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem' }}>
+                                {fullAudioUrl && (
+                                  <a href={fullAudioUrl} download="full-script.mp3" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', background: 'white', borderRadius: '4px', color: '#166534', textDecoration: 'none', fontSize: '0.85rem', border: '1px solid #d1d5db' }}>
+                                    📜 Full Script
+                                  </a>
+                                )}
+                                {scriptureAudioUrl && (
+                                  <a href={scriptureAudioUrl} download="scripture-content.mp3" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', background: 'white', borderRadius: '4px', color: '#2563eb', textDecoration: 'none', fontSize: '0.85rem', border: '1px solid #d1d5db' }}>
+                                    📖 Scripture
+                                  </a>
+                                )}
+                                {framingAudioUrl && (
+                                  <a href={framingAudioUrl} download="performance-framing.mp3" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', background: 'white', borderRadius: '4px', color: '#7c3aed', textDecoration: 'none', fontSize: '0.85rem', border: '1px solid #d1d5db' }}>
+                                    🎭 Framing
+                                  </a>
+                                )}
+                              </div>
                             </div>
                           )}
                         </div>

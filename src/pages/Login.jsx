@@ -121,7 +121,7 @@ export default function Login() {
   return (
     <div style={styles.container}>
       <div style={styles.card}>
-        <h1 style={styles.title}>Hindi Bible TTS</h1>
+        <h1 style={styles.title}>Oral Bridge</h1>
         <p style={styles.subtitle}>
           {isSignUp ? 'Create your account' : 'Sign in to continue'}
         </p>

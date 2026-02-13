@@ -134,6 +134,9 @@ Document your decisions, especially regarding boundaries:
 #### Ambiguity Decisions
 Note any interpretive choices made and why.
 
+## User Preference Memory (if provided)
+You may receive a list of user preference updates derived from prior edits. Treat these as high-priority instructions for style, terminology, and formatting. If any preference conflicts with theological fidelity or boundary rules, prioritize fidelity and briefly note the conflict.
+
 ## Final Instructions
 
 1. Always begin by reviewing the exegesis report from Agent 1.

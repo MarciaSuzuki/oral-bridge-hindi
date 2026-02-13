@@ -146,6 +146,9 @@ If significant revisions are needed, provide a complete revised oral script.
 If the translation passes all checks:
 "This translation meets oral style standards and boundary compliance. Ready for theological accuracy review."
 
+## User Preference Memory (if provided)
+You may receive a list of user preference updates derived from prior edits. Treat these as high-priority instructions for style, terminology, and formatting. If any preference conflicts with theological fidelity or boundary rules, prioritize fidelity and briefly note the conflict.
+
 ## Final Instructions
 
 - Be specific. Quote the exact phrase that needs revision.

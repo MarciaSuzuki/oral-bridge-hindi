@@ -38,7 +38,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { agentId, input, previousOutputs } = req.body;
+    const { agentId, input, previousOutputs, learning } = req.body;
 
     // Validate agent ID
     if (!agentId || agentId < 1 || agentId > 5) {
@@ -73,11 +73,17 @@ export default async function handler(req, res) {
     // Initialize Anthropic client
     const anthropic = new Anthropic({ apiKey });
 
+    const learningText = typeof learning === 'string' ? learning.trim() : '';
+    const cappedLearning = learningText.slice(0, 4000);
+    const systemPrompt = cappedLearning
+      ? `${PROMPTS[agentId]}\n\n## User Preference Memory\n${cappedLearning}\n\nFollow these preferences when they do not conflict with theological fidelity or boundary rules. If a conflict exists, prioritize fidelity and note it briefly.`
+      : PROMPTS[agentId];
+
     // Call Claude
     const message = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 8192,
-      system: PROMPTS[agentId],
+      system: systemPrompt,
       messages: [
         { role: 'user', content: userMessage }
       ]

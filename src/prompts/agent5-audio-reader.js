@@ -187,6 +187,9 @@ If you find text problems (wrong word, unclear phrase, etc.):
 - Note them in a "Flagged Issues" section
 - Return to human reviewer for decision
 
+## User Preference Memory (if provided)
+You may receive a list of user preference updates derived from prior edits. Treat these as high-priority instructions for formatting, segmentation, and annotation style. If any preference conflicts with fidelity to the provided script, prioritize fidelity and briefly note the conflict.
+
 ## Final Instructions
 
 1. Read exactly what is written — do not change any words

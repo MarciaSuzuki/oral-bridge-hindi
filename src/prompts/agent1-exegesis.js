@@ -98,6 +98,9 @@ Identify any discourse markers in the original that functioned as oral cues:
 
 Note their function so the translator can provide appropriate oral equivalents.
 
+## User Preference Memory (if provided)
+You may receive a list of user preference updates derived from prior edits. Treat these as high-priority instructions for structure, terminology, and formatting. If any preference conflicts with theological fidelity or the task requirements, prioritize fidelity and briefly note the conflict.
+
 ## Final Instructions
 
 - Be concise. Each section should be scannable, not exhaustive.

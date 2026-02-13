@@ -1,6 +1,13 @@
 import { useState } from 'react'
 import { AGENT_INFO } from '../prompts/index.js'
 import { useAuth } from '../context/AuthContext'
+import {
+  addLearningEntries,
+  formatLearningNotes,
+  hasSeenEdit,
+  hashText,
+  parseLearningText
+} from '../utils/learningMemory'
 
 // Simple Markdown renderer for tables and formatting
 function FormattedOutput({ content }) {
@@ -125,6 +132,39 @@ const styles = {
   container: {
     maxWidth: '1000px',
     margin: '0 auto'
+  },
+  learningToggle: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.35rem',
+    marginBottom: '1.5rem',
+    padding: '0.75rem 1rem',
+    border: '1px solid #e5e7eb',
+    borderRadius: '8px',
+    background: '#f9fafb'
+  },
+  learningToggleLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    fontWeight: '600'
+  },
+  learningToggleHint: {
+    fontSize: '0.85rem',
+    color: '#6b7280'
+  },
+  learningActionRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.75rem',
+    marginTop: '0.5rem'
+  },
+  learningBadge: {
+    fontSize: '0.8rem',
+    color: '#0f766e',
+    background: '#ccfbf1',
+    padding: '0.15rem 0.5rem',
+    borderRadius: '9999px'
   },
   inputSection: {
     background: 'white',
@@ -358,6 +398,12 @@ export default function Pipeline() {
   const [error, setError] = useState(null)
   const [feedback, setFeedback] = useState({})
   const [viewMode, setViewMode] = useState({}) // 'formatted' or 'edit'
+  const [autoLearn, setAutoLearn] = useState(() => {
+    if (typeof window === 'undefined') return true
+    const stored = window.localStorage.getItem('obh_auto_learn')
+    return stored !== 'false'
+  })
+  const [learningRefresh, setLearningRefresh] = useState(0)
   
   // ElevenLabs state
   const [elevenLabsKey, setElevenLabsKey] = useState('')
@@ -399,18 +445,72 @@ export default function Pipeline() {
     }
   }
 
+  const captureLearningForAgent = async (targetAgentId) => {
+    const original = outputs[`agent${targetAgentId}`]
+    const edited = editedOutputs[`agent${targetAgentId}`]
+    if (!original || !edited) return
+
+    const originalTrimmed = original.trim()
+    const editedTrimmed = edited.trim()
+    if (!originalTrimmed || originalTrimmed === editedTrimmed) return
+
+    const editHash = hashText(`${targetAgentId}::${originalTrimmed}::${editedTrimmed}`)
+    if (hasSeenEdit(targetAgentId, editHash)) return
+
+    try {
+      const response = await fetch('/api/learn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agentId: targetAgentId,
+          original: originalTrimmed,
+          edited: editedTrimmed
+        })
+      })
+
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.error || 'Learning request failed')
+      }
+
+      if (data.learning) {
+        const learningLines = parseLearningText(data.learning)
+        addLearningEntries(targetAgentId, learningLines, editHash)
+      } else {
+        addLearningEntries(targetAgentId, [], editHash)
+      }
+      setLearningRefresh(prev => prev + 1)
+    } catch (err) {
+      console.warn(`Learning capture failed for Agent ${targetAgentId}:`, err)
+    }
+  }
+
+  const captureLearningBeforeRun = async (agentId) => {
+    if (!autoLearn) return
+    const targets = new Set()
+    targets.add(agentId)
+    if (agentId > 1) targets.add(agentId - 1)
+
+    for (const targetId of targets) {
+      await captureLearningForAgent(targetId)
+    }
+  }
+
   const runAgent = async (agentId, withFeedback = false) => {
     setError(null)
     setRunningAgent(agentId)
     setExpandedStage(agentId)
 
     try {
+      await captureLearningBeforeRun(agentId)
+
       // Use edited output if available, otherwise original
       const getPreviousOutput = (id) => {
         return editedOutputs[`agent${id}`] || outputs[`agent${id}`]
       }
 
       let inputText = agentId === 1 ? sourceInput : getPreviousOutput(agentId - 1)
+      const learningNotes = formatLearningNotes(agentId)
       
       // Add feedback if re-running with feedback
       if (withFeedback && feedback[`agent${agentId}`]) {
@@ -423,7 +523,8 @@ export default function Pipeline() {
         body: JSON.stringify({
           agentId,
           input: inputText,
-          previousOutputs: { ...outputs, ...editedOutputs }
+          previousOutputs: { ...outputs, ...editedOutputs },
+          learning: learningNotes
         })
       })
 
@@ -662,6 +763,26 @@ export default function Pipeline() {
         </div>
       </div>
 
+      <div style={styles.learningToggle}>
+        <label style={styles.learningToggleLabel}>
+          <input
+            type="checkbox"
+            checked={autoLearn}
+            onChange={(e) => {
+              const next = e.target.checked
+              setAutoLearn(next)
+              if (typeof window !== 'undefined') {
+                window.localStorage.setItem('obh_auto_learn', String(next))
+              }
+            }}
+          />
+          Auto-train from edits
+        </label>
+        <div style={styles.learningToggleHint}>
+          When off, edits will only train after you approve them per agent.
+        </div>
+      </div>
+
       {error && (
         <div style={styles.errorMessage}>
           {error}
@@ -674,6 +795,20 @@ export default function Pipeline() {
           const status = getStageStatus(agent.id)
           const isExpanded = expandedStage === agent.id
           const hasOutput = outputs[`agent${agent.id}`]
+          const outputKey = `agent${agent.id}`
+          const originalOutput = outputs[outputKey]
+          const editedOutput = editedOutputs[outputKey]
+          const hasEdits = editedOutput && editedOutput !== originalOutput
+          let pendingLearning = false
+
+          if (hasEdits && originalOutput) {
+            const originalTrimmed = originalOutput.trim()
+            const editedTrimmed = editedOutput.trim()
+            if (originalTrimmed && editedTrimmed && originalTrimmed !== editedTrimmed) {
+              const editHash = hashText(`${agent.id}::${originalTrimmed}::${editedTrimmed}`)
+              pendingLearning = !hasSeenEdit(agent.id, editHash)
+            }
+          }
 
           return (
             <div key={agent.id} style={styles.stageCard}>
@@ -743,10 +878,32 @@ export default function Pipeline() {
                         </div>
                       )}
                       
-                      {editedOutputs[`agent${agent.id}`] && editedOutputs[`agent${agent.id}`] !== outputs[`agent${agent.id}`] && (
+                      {hasEdits && (
                         <p style={{ color: '#059669', fontSize: '0.85rem', marginTop: '0.5rem' }}>
                           ✓ You have edited this output. Your changes will be used for the next agent.
+                          {autoLearn
+                            ? ' Learning will be captured automatically on the next run.'
+                            : ' Learning is awaiting your approval.'}
                         </p>
+                      )}
+
+                      {hasEdits && !autoLearn && pendingLearning && (
+                        <div style={styles.learningActionRow}>
+                          <button
+                            style={{ ...styles.button, ...styles.secondaryButton }}
+                            onClick={() => captureLearningForAgent(agent.id)}
+                            disabled={runningAgent !== null}
+                          >
+                            Approve Learning
+                          </button>
+                          <span style={styles.learningBadge}>Pending</span>
+                        </div>
+                      )}
+
+                      {hasEdits && !autoLearn && !pendingLearning && (
+                        <div style={styles.learningActionRow}>
+                          <span style={styles.learningBadge}>Learning approved</span>
+                        </div>
                       )}
                       
                       {outputs[`agent${agent.id}_usage`] && (
